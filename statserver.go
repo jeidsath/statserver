@@ -152,12 +152,12 @@ func udpListen(addr string) {
 
 	for {
 		n, _, err := conn.ReadFromUDP(buf)
-		if err != nil || n != 72 {
+		if err != nil {
 			fmt.Println(err)
 			continue
 		}
 		if n != 72 {
-			fmt.Println("ERROR: bad packet")
+			fmt.Printf("ERROR: bad packet, %v read\n", n)
 			continue
 		}
 
