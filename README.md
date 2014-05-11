@@ -1,6 +1,10 @@
 Statserver
 ==========
 
-go test
+1. Install [Go](http://golang.org) and [goprotobuf](https://code.google.com/p/goprotobuf/)
 
-go run statserver.go
+2. Run:
+
+```go test```
+
+```go run statserver.go```
