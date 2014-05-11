@@ -1,15 +1,17 @@
 package main
 
 import (
-        "errors"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"math"
 	"net"
 	"net/http"
 	"sort"
 	"strconv"
 	"strings"
+
+	"./ip_event"
+	"code.google.com/p/goprotobuf/proto"
 )
 
 var dataStore map[string]*Application
@@ -22,49 +24,46 @@ type EventsJson struct {
 
 type Application struct {
 	Sha string
-	Ips map[string]uint64
+	Ips map[int64]uint64
 }
 
-func (app *Application) addIp(ip []byte) {
+func (app *Application) addIp(ip int64) {
 	if app.Ips == nil {
-		app.Ips = make(map[string]uint64)
+		app.Ips = make(map[int64]uint64)
 	}
-	app.Ips[stringIp(ip)] += 1
+	app.Ips[ip] += 1
 }
 
-func reduceIp(ip string) int {
-	ipSplit := strings.Split(ip, ".")
-	out := 0
-	for ii := 0; ii < 3; ii++ {
-		subNum, _ := strconv.Atoi(ipSplit[ii])
-		out += int(math.Pow(256, float64(3-ii))) * subNum
-	}
-	subNum, _ := strconv.Atoi(ipSplit[3])
-	out += subNum / 16
-	return out
+func reduceIp(ip int64) int64 {
+	return (ip / 16) * 16
 }
 
-func stringIp(ip []byte) string {
+func stringIp(ip int64) string {
+	ipSplit := [4]int{}
+	for ii := 0; ii < 4; ii++ {
+		shift := uint((3 - ii) * 8)
+		ipSplit[ii] = int((ip & (255 << shift)) >> shift)
+	}
 	ipStr := ""
-	for ii := 3; ii >= 0; ii-- {
-		ipStr += strconv.Itoa(int(ip[ii]))
-		if ii != 0 {
+	for ii := 0; ii < 4; ii++ {
+		ipStr += strconv.Itoa(ipSplit[ii])
+		if ii != 3 {
 			ipStr += "."
 		}
 	}
-	return ipStr
+        return ipStr
 }
 
 func jsonForApp(sha string) (string, error) {
 
-        ll, ok := dataStore[sha]
+	ll, ok := dataStore[sha]
 
 	if !ok {
 		return "", errors.New("Not found")
 	}
 
 	// Looks like we're just dealing with IPv4
-	mm := make(map[int]uint64)
+	mm := make(map[int64]uint64)
 
 	ej := EventsJson{}
 	for k, v := range ll.Ips {
@@ -73,7 +72,7 @@ func jsonForApp(sha string) (string, error) {
 	}
 
 	maxCount := uint64(0)
-	maxIp := 0
+	maxIp := int64(0)
 	for k, v := range mm {
 		if v > maxCount {
 			maxIp = k
@@ -81,8 +80,8 @@ func jsonForApp(sha string) (string, error) {
 		}
 	}
 
-	goodIpMap := make(map[string]int)
-	badIpMap := make(map[string]int)
+	goodIpMap := make(map[int64]int)
+	badIpMap := make(map[int64]int)
 
 	for k, _ := range ll.Ips {
 		ipNum := reduceIp(k)
@@ -97,11 +96,11 @@ func jsonForApp(sha string) (string, error) {
 	ej.BadIps = []string{}
 
 	for k, _ := range goodIpMap {
-		ej.GoodIps = append(ej.GoodIps, k)
+		ej.GoodIps = append(ej.GoodIps, stringIp(k))
 	}
 
 	for k, _ := range badIpMap {
-		ej.BadIps = append(ej.BadIps, k)
+		ej.BadIps = append(ej.BadIps, stringIp(k))
 	}
 
 	sort.Strings(ej.GoodIps)
@@ -109,9 +108,9 @@ func jsonForApp(sha string) (string, error) {
 
 	out, err := json.Marshal(ej)
 	if err != nil {
-                return "", err
+		return "", err
 	}
-        return string(out), nil
+	return string(out), nil
 }
 
 func appData(w http.ResponseWriter, r *http.Request) {
@@ -121,15 +120,15 @@ func appData(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-        out, err := jsonForApp(pathChunks[2])
-        if err != nil {
-                http.Error(w, err.Error(), 500)
-                return
-        }
-        fmt.Fprintf(w, string(out))
+	out, err := jsonForApp(pathChunks[2])
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	fmt.Fprintf(w, string(out))
 }
 
-func storeShaIp(sha string, ip []byte) {
+func storeShaIp(sha string, ip int64) {
 	if dataStore == nil {
 		dataStore = make(map[string]*Application)
 	}
@@ -162,7 +161,14 @@ func udpListen(addr string) {
 			continue
 		}
 
-		storeShaIp(string(buf[0:64]), buf[64:72])
+		ipEvent := &lookout_backend_coding_questions_q1.IpEvent{}
+                err = proto.Unmarshal(buf[0:72], ipEvent)
+		if err != nil {
+			fmt.Println(err)
+			continue
+		}
+
+		storeShaIp(*ipEvent.AppSha256, *ipEvent.Ip)
 	}
 }
 
