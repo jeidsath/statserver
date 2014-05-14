@@ -10,23 +10,26 @@ func ip4ToInt64(a, b, c, d int) int64 {
 }
 
 func TestReduce(t *testing.T) {
-	ip := ip4ToInt64(107, 92, 8, 5)
-	val := ip4ToInt64(107, 92, 8, 5/16)
-	if reduceIp(ip) != val {
-		fmt.Printf("Reduce of %v was %v, should be %v", ip, reduceIp(ip), val)
+	ip := IpAddress{ip4ToInt64(107, 92, 8, 5)}
+	val := IpAddress{ip4ToInt64(107, 92, 8, 5/16)}
+	if ip.topIPForBlock(16) != val {
+		fmt.Printf("Reduce of %v was %v, should be %v", ip, ip.topIPForBlock(16), val)
 		t.Fail()
 	}
 }
 
 func TestStringIp(t *testing.T) {
-	ip := ip4ToInt64(123, 45, 12, 1)
+	ip := IpAddress{ip4ToInt64(123, 45, 12, 1)}
 	val := "123.45.12.1"
-	if stringIp(ip) != val {
-		fmt.Printf("String of %v was %v, should be %v", ip, stringIp(ip), val)
+	if ip.toString() != val {
+		fmt.Printf("String of %v was %v, should be %v", ip, ip.toString(), val)
 	}
 }
 
 func TestFunctional(t *testing.T) {
+	store := &DataStore{}
+	store.init()
+
 	sha := "0fe3fa2fa0869e5100e24ede99f6daf2fc8a30cfd3a10e9a8e17b8926fc445ce"
 	ips := []int64{
 		ip4ToInt64(192, 160, 0, 1),
@@ -37,12 +40,12 @@ func TestFunctional(t *testing.T) {
 	}
 
 	for _, ip := range ips {
-		storeShaIp(sha, ip)
+		store.insert(sha, IpAddress{ip})
 	}
 
 	expect := "{\"count\":5,\"good_ips\":[\"192.160.0.1\",\"192.160.0.2\",\"192.160.0.3\",\"192.160.0.4\"],\"bad_ips\":[\"10.0.0.1\"]}"
 
-	output, err := jsonForApp(sha)
+	output, err := store.eventJson(sha)
 	if output != expect {
 		fmt.Printf("Expect %v but got %v\n", expect, output)
 		t.Fail()

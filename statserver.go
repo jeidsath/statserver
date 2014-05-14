@@ -14,7 +14,9 @@ import (
 	"code.google.com/p/goprotobuf/proto"
 )
 
-var dataStore map[string]*Application
+type DataStore struct {
+	Data map[string]*Application
+}
 
 type EventsJson struct {
 	Count   uint64   `json:"count"`
@@ -24,25 +26,61 @@ type EventsJson struct {
 
 type Application struct {
 	Sha string
-	Ips map[int64]uint64
+	Ips map[IpAddress]uint64
 }
 
-func (app *Application) addIp(ip int64) {
-	if app.Ips == nil {
-		app.Ips = make(map[int64]uint64)
+type IpAddress struct {
+	Address int64
+}
+
+func (store *DataStore) init() {
+	store.Data = make(map[string]*Application)
+}
+
+func (store *DataStore) reset() {
+	store.init()
+}
+
+func (store *DataStore) eventJson(sha string) (string, error) {
+	ll, ok := store.Data[sha]
+	if !ok {
+		return "", errors.New("Not found")
 	}
-	app.Ips[ip] += 1
+	return ll.toJson()
 }
 
-func reduceIp(ip int64) int64 {
-	return (ip / 16) * 16
+func (store *DataStore) serveEvents(w http.ResponseWriter, r *http.Request) {
+	pathChunks := strings.Split(r.URL.Path, "/")
+	if len(pathChunks) != 3 && pathChunks[1] != "image" ||
+		len(pathChunks[2]) != 64 {
+		http.NotFound(w, r)
+		return
+	}
+	out, err := store.eventJson(pathChunks[2])
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	fmt.Fprintf(w, string(out))
 }
 
-func stringIp(ip int64) string {
+func (store *DataStore) insert(sha string, ip IpAddress) {
+	_, ok := store.Data[sha]
+	if !ok {
+		store.Data[sha] = &Application{sha, nil}
+	}
+	store.Data[sha].addIp(ip)
+}
+
+func (ip *IpAddress) topIPForBlock(size int64) IpAddress {
+	return IpAddress{(ip.Address / size) * size}
+}
+
+func (ip *IpAddress) toString() string {
 	ipSplit := [4]int{}
 	for ii := 0; ii < 4; ii++ {
 		shift := uint((3 - ii) * 8)
-		ipSplit[ii] = int((ip & (255 << shift)) >> shift)
+		ipSplit[ii] = int((ip.Address & (255 << shift)) >> shift)
 	}
 	ipStr := ""
 	for ii := 0; ii < 4; ii++ {
@@ -51,41 +89,46 @@ func stringIp(ip int64) string {
 			ipStr += "."
 		}
 	}
-        return ipStr
+	return ipStr
 }
 
-func jsonForApp(sha string) (string, error) {
-
-	ll, ok := dataStore[sha]
-
-	if !ok {
-		return "", errors.New("Not found")
+func (app *Application) addIp(ip IpAddress) {
+	if app.Ips == nil {
+		app.Ips = make(map[IpAddress]uint64)
 	}
+	app.Ips[ip] += 1
+}
 
-	// Looks like we're just dealing with IPv4
-	mm := make(map[int64]uint64)
+func (app *Application) toJson() (string, error) {
+
+	// Histogram the count of IP Addresses by IP block
+
+	reducedAddresses := make(map[IpAddress]uint64)
 
 	ej := EventsJson{}
-	for k, v := range ll.Ips {
+	for k, v := range app.Ips {
 		ej.Count += v
-		mm[reduceIp(k)] += v
+		reducedAddresses[k.topIPForBlock(16)] += v
 	}
 
-	maxCount := uint64(0)
-	maxIp := int64(0)
-	for k, v := range mm {
-		if v > maxCount {
-			maxIp = k
-			maxCount = v
+	maxFrequency := uint64(0)
+	mostFrequentIp := IpAddress{}
+	for k, v := range reducedAddresses {
+		if v > maxFrequency {
+			mostFrequentIp = k
+			maxFrequency = v
 		}
 	}
 
-	goodIpMap := make(map[int64]int)
-	badIpMap := make(map[int64]int)
+	// Split our IpAddress by block. Good IPs are those whose block matches
+	// the highest frequency block
 
-	for k, _ := range ll.Ips {
-		ipNum := reduceIp(k)
-		if ipNum == maxIp {
+	goodIpMap := make(map[IpAddress]int)
+	badIpMap := make(map[IpAddress]int)
+
+	for k, _ := range app.Ips {
+		reducedIp := k.topIPForBlock(16)
+		if reducedIp == mostFrequentIp {
 			goodIpMap[k] = 1
 		} else {
 			badIpMap[k] = 1
@@ -96,11 +139,11 @@ func jsonForApp(sha string) (string, error) {
 	ej.BadIps = []string{}
 
 	for k, _ := range goodIpMap {
-		ej.GoodIps = append(ej.GoodIps, stringIp(k))
+		ej.GoodIps = append(ej.GoodIps, k.toString())
 	}
 
 	for k, _ := range badIpMap {
-		ej.BadIps = append(ej.BadIps, stringIp(k))
+		ej.BadIps = append(ej.BadIps, k.toString())
 	}
 
 	sort.Strings(ej.GoodIps)
@@ -113,33 +156,7 @@ func jsonForApp(sha string) (string, error) {
 	return string(out), nil
 }
 
-func appData(w http.ResponseWriter, r *http.Request) {
-	pathChunks := strings.Split(r.URL.Path, "/")
-	if len(pathChunks) != 3 && pathChunks[1] != "image" ||
-		len(pathChunks[2]) != 64 {
-		http.NotFound(w, r)
-		return
-	}
-	out, err := jsonForApp(pathChunks[2])
-	if err != nil {
-		http.Error(w, err.Error(), 500)
-		return
-	}
-	fmt.Fprintf(w, string(out))
-}
-
-func storeShaIp(sha string, ip int64) {
-	if dataStore == nil {
-		dataStore = make(map[string]*Application)
-	}
-	_, ok := dataStore[sha]
-	if !ok {
-		dataStore[sha] = &Application{sha, nil}
-	}
-	dataStore[sha].addIp(ip)
-}
-
-func udpListen(addr string) {
+func udpListen(addr string, store *DataStore) {
 	udpAddr, _ := net.ResolveUDPAddr("udp", addr)
 
 	conn, err := net.ListenUDP("udp", udpAddr)
@@ -162,22 +179,22 @@ func udpListen(addr string) {
 		}
 
 		ipEvent := &lookout_backend_coding_questions_q1.IpEvent{}
-                err = proto.Unmarshal(buf[0:72], ipEvent)
+		err = proto.Unmarshal(buf[0:72], ipEvent)
 		if err != nil {
 			fmt.Println(err)
 			continue
 		}
 
-		storeShaIp(*ipEvent.AppSha256, *ipEvent.Ip)
+		store.insert(*ipEvent.AppSha256, IpAddress{*ipEvent.Ip})
 	}
 }
 
-func tcpListen(addr string, cc chan bool) {
+func tcpListen(addr string, cc chan bool, store *DataStore) {
 	http.HandleFunc("/events/", func(w http.ResponseWriter, r *http.Request) {
-		appData(w, r)
+		store.serveEvents(w, r)
 	})
 	http.HandleFunc("/reset", func(w http.ResponseWriter, r *http.Request) {
-		dataStore = nil
+		store.reset()
 	})
 	http.HandleFunc("/quit", func(w http.ResponseWriter, r *http.Request) {
 		cc <- true
@@ -190,8 +207,10 @@ func waitForQuitSig(cc chan bool) {
 }
 
 func main() {
-	go udpListen(":3001")
+	store := &DataStore{}
+	store.init()
+	go udpListen(":3001", store)
 	cc := make(chan bool)
-	go tcpListen(":3000", cc)
+	go tcpListen(":3000", cc, store)
 	waitForQuitSig(cc)
 }
